@@ -2,7 +2,7 @@
 
 import argparse
 
-from .models import PEDAL_MODELS
+from .models import PEDAL_MODELS, build_model
 
 CAL_KEYS = ["routing", "noise", "latency", "levels", "wideband", "refs", "repeat"]
 
@@ -37,7 +37,10 @@ def main() -> None:
 
     q = sub.add_parser("pedal", help="pedal tests: FX SEND -> pedal -> INPUT R")
     q.add_argument("--model", required=True, choices=sorted(PEDAL_MODELS),
-                   help="; ".join(f"{k} = {m.family}: {', '.join(m.knobs)}" for k, m in PEDAL_MODELS.items()))
+                   help="freq / gain = overdrive whose fourth control filters / changes level or drive; "
+                        "compressor")
+    q.add_argument("--control", help='overdrive: panel name of the fourth control, e.g. Cut, Lowcut, Boost, "LP/HP"')
+    q.add_argument("--positions", help="gain: comma-separated switch positions, rest first (default off,on)")
     q.add_argument("--label", help="session label (default: the model name)")
     q.add_argument("--calibration", help="calibration session dir (default: newest complete)")
     q.add_argument("--only", nargs="+", help="run only these tests (ids from --list); session not complete")
@@ -52,17 +55,19 @@ def main() -> None:
     from .steps import calibration_steps, print_list, run
 
     kind = "calibration" if a.cmd == "calibrate" else "pedal"
-    if a.list:
-        if kind == "calibration":
+    if kind == "calibration":
+        if a.list:
             print_list(calibration_steps(), kind)
         else:
-            pm = PEDAL_MODELS[a.model]
-            print_list(pm.steps(), kind, pm.defaults)
+            run(kind, a.label, a.only, a.yes)
         return
-    if kind == "calibration":
-        run(kind, a.label, a.only, a.yes)
+    pm = build_model(a.model, a.control, a.positions and a.positions.split(","))
+    if pm.session_meta and not a.control:
+        q.error(f"--model {a.model} needs --control <panel name of the fourth control>")
+    if a.list:
+        print_list(pm.steps(), kind, pm.defaults)
     else:
-        run(kind, a.label or a.model, a.only, a.yes, a.calibration, a.model)
+        run(kind, a.label or a.model, a.only, a.yes, a.calibration, a.model, pm)
 
 
 if __name__ == "__main__":

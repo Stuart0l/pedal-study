@@ -1,5 +1,6 @@
 """Registry of measurable pedals across families (capture side; no analysis imports)."""
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -29,8 +30,17 @@ def _all_stimuli() -> dict[str, Stimulus]:
 ALL_PEDAL_STIMULI = _all_stimuli()
 
 
+def build_model(name: str, control: str | None = None, positions: list[str] | tuple[str, ...] | None = None) -> PedalModel:
+    """PEDAL_MODELS[name] with an overdrive's fourth-control name and positions filled in."""
+    pm = PEDAL_MODELS[name]
+    if isinstance(pm, overdrive.OverdriveModel) and control:
+        pm = dataclasses.replace(pm, control=control, positions=tuple(positions or pm.positions))
+    return pm
+
+
 def model_of(session_path: Path) -> PedalModel:
-    return PEDAL_MODELS[json.loads((Path(session_path) / "meta.json").read_text())["pedal_model"]]
+    meta = json.loads((Path(session_path) / "meta.json").read_text())
+    return build_model(meta["pedal_model"], meta.get("control"), meta.get("positions"))
 
 
 def latest_pedal_session(family: str, root: Path = SESSIONS_DIR) -> Path:

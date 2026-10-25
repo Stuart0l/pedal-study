@@ -12,8 +12,8 @@ import sounddevice as sd
 
 from .audio import capture, check_device, find_device, is_clipped, peak_dbfs
 from .config import ALL_IN, FS, IN_CH, POS
-from .models import ALL_PEDAL_STIMULI, PEDAL_MODELS
-from .plan import Cap, Step
+from .models import ALL_PEDAL_STIMULI
+from .plan import Cap, PedalModel, Step
 from .session import Session, latest_calibration, stimulus_file_name
 from .signals import SWEEPS, silence, sine, stepped_sine, sync_sweep
 
@@ -208,7 +208,7 @@ def _run_capture(sess: Session, dev: int, step: Step, cap: Cap, ui: Prompter, pe
 def _print_knobs(knobs: dict, prev: dict | None) -> None:
     for k in knobs:  # panel order (every knob dict is built from model.knobs)
         mark = "→" if prev is None or prev[k] != knobs[k] else " "
-        print(f"    {mark} {k:<7} {POS[knobs[k]]}")
+        print(f"    {mark} {k:<7} {POS.get(knobs[k], knobs[k])}")
 
 
 def _missing_refs(cal_ref: Path, steps: list[Step]) -> list[str]:
@@ -225,12 +225,11 @@ def _missing_refs(cal_ref: Path, steps: list[Step]) -> list[str]:
 
 
 def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: str | None = None,
-        model: str | None = None) -> Path:
-    """`model` (a PEDAL_MODELS key) is required for kind == "pedal"."""
+        model: str | None = None, pm: PedalModel | None = None) -> Path:
+    """`model` (a PEDAL_MODELS key) and `pm` (built by models.build_model) are required for kind == "pedal"."""
     ui = Prompter(yes)
-    pedal = kind == "pedal"
-    pm = PEDAL_MODELS[model] if pedal else None
-    steps = pm.steps() if pedal else calibration_steps()
+    pedal = pm is not None
+    steps = pm.steps() if pm else calibration_steps()
     last_id = steps[-1].id
     if only:
         keys = {s.key for s in steps}
@@ -260,7 +259,7 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
     sess.meta["checklist_confirmed"] = True
     sess.meta["calibration_ref"] = str(cal_ref) if cal_ref else None
     if pedal:
-        sess.meta["pedal_model"] = model
+        sess.meta.update(pedal_model=model, **pm.session_meta)
     sess.save_meta()
     print(f"  session: {sess.path}")
     if cal_ref:

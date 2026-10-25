@@ -48,5 +48,10 @@ class PedalModel:
         """Resting knob/switch positions (what "unchanged" means in the step list)."""
         return knob_dict(self.knobs)
 
+    @property
+    def session_meta(self) -> dict:
+        """Extra meta.json fields that rebuild this model (see models.build_model)."""
+        return {}
+
     def steps(self) -> list[Step]:
         raise NotImplementedError
