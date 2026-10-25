@@ -93,7 +93,7 @@ def calibration_steps() -> list[Step]:
     ]
 
 
-def print_list(steps: list[Step], kind: str) -> None:
+def print_list(steps: list[Step], kind: str, defaults: dict | None = None) -> None:
     print(f"{kind} steps:")
     if kind == "calibration":
         print("  C0  Checklist      Ampero settings + cabling (always)")
@@ -103,8 +103,8 @@ def print_list(steps: list[Step], kind: str) -> None:
         print(f"      why: {s.why}")
         if kind == "pedal":
             for c in s.caps:
-                changed = {k: v for k, v in c.knobs.items() if v not in ("noon", "off")}
-                print(f"        - {c.name:<26} {changed or 'all noon'}")
+                changed = {k: v for k, v in c.knobs.items() if v != defaults[k]}
+                print(f"        - {c.name:<26} {changed or 'all at rest'}")
     total = sum(s.seconds for s in steps)
     print(f"  total capture time ≈ {total / 60:.1f} min plus knob changes")
 

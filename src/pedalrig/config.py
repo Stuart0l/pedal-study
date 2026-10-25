@@ -22,4 +22,4 @@ SESSIONS_DIR = Path("sessions")
 # so G is attributed to the digital USB -> send side, i.e. it scales what the pedal receives.
 INPUT_SIDE_GAIN_DB = 0.0
 POS = {"min": "min (7:00)", "9": "9:00", "noon": "noon (12:00)", "3": "3:00", "max": "max (5:00)",
-       "off": "off", "on": "ON"}
+       "off": "off", "on": "ON", "lp": "LP", "hp": "HP"}

@@ -195,10 +195,14 @@ def segment(rec_col: np.ndarray, latency: int, pre_s: float, fs: float, length: 
     return rec_col[s:s + length]
 
 
-def correlation_lag(rec: np.ndarray, stim: np.ndarray) -> int:
-    """Index in `rec` where `stim` starts (max |cross-correlation|)."""
-    c = signal.fftconvolve(rec, stim[::-1], mode="full")
-    return int(np.argmax(np.abs(c))) - (len(stim) - 1)
+def correlation_lag(rec: np.ndarray, stim: np.ndarray, lo: int | None = None, hi: int | None = None) -> int:
+    """Index in `rec` where `stim` starts (max |cross-correlation|), searched in [lo, hi] if given."""
+    c = np.abs(signal.fftconvolve(rec, stim[::-1], mode="full"))
+    off = len(stim) - 1
+    if lo is not None:
+        a, b = max(0, lo + off), min(len(c), hi + off + 1)
+        return int(np.argmax(c[a:b])) + a - off
+    return int(np.argmax(c)) - off
 
 
 def band_mean(f: np.ndarray, v: np.ndarray, lo: float, hi: float) -> float:
@@ -395,8 +399,14 @@ class PedalAnalysis:
         return f"ref_{self.ps.capture_info(name)['stimulus']}"
 
     def _latency(self, y, stim) -> int:
-        """Per-capture coarse alignment. Stream latency can change between stream opens, so the
-        calibration value is not reused. For sines an error of whole periods is harmless."""
+        """Per-capture alignment by cross-correlation with the stimulus. When the calibration
+        latency was stable, the search is limited to −1…+10 ms around it (the pedal only adds its
+        own small delay). An unrestricted search fails for saturated ramps: the clipped output has
+        a flat envelope, so whole-capture correlation is ambiguous (measured: lags off by up to
+        0.75 s on a high-gain pedal). For sines an error of whole periods is harmless."""
+        if self.latency_stable:
+            L = self.pre + self.cal["latency_samples"]
+            return correlation_lag(y, stim, L - int(0.001 * self.fs), L + int(0.010 * self.fs)) - self.pre
         return correlation_lag(y, stim) - self.pre
 
     def knobs(self, name):

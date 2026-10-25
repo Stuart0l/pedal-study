@@ -53,7 +53,11 @@ def main() -> None:
 
     kind = "calibration" if a.cmd == "calibrate" else "pedal"
     if a.list:
-        print_list(calibration_steps() if kind == "calibration" else PEDAL_MODELS[a.model].steps(), kind)
+        if kind == "calibration":
+            print_list(calibration_steps(), kind)
+        else:
+            pm = PEDAL_MODELS[a.model]
+            print_list(pm.steps(), kind, pm.defaults)
         return
     if kind == "calibration":
         run(kind, a.label, a.only, a.yes)

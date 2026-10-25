@@ -43,5 +43,10 @@ class PedalModel:
     notebook: str
     knobs: tuple[str, ...]
 
+    @property
+    def defaults(self) -> dict:
+        """Resting knob/switch positions (what "unchanged" means in the step list)."""
+        return knob_dict(self.knobs)
+
     def steps(self) -> list[Step]:
         raise NotImplementedError

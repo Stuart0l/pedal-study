@@ -28,38 +28,43 @@ Q = {
 
 @dataclass(frozen=True)
 class OverdriveModel(PedalModel):
-    """Gain, Volume, Tone plus one more control, which T3 tests: a knob (min/noon/max) or an on/off
-    switch listed in `switches` (off by default; off/on, plus a 200 Hz ramp with it on, since a
-    switch such as a boost may change the clipping itself)."""
+    """Gain, Volume, Tone plus one more control, which T3 tests: a knob (min/noon/max) or a switch
+    listed in `switches` as (name, positions), e.g. ("Boost", ("off", "on")). A switch rests in its
+    first position; T3 sweeps every position and adds a 200 Hz ramp in each other position, since
+    a switch (a boost, a filter voicing) may change the clipping itself."""
     knobs: tuple[str, ...]           # panel order, as printed to the user
     t3_knob: str
     t3_question: str
     t3_expect: str
-    switches: tuple[str, ...] = ()   # on/off controls; "off" unless a capture turns them on
+    switches: tuple[tuple[str, tuple[str, ...]], ...] = ()
     family = "overdrive"
     notebook = "notebooks/02_overdrive.ipynb"
 
     @property
     def t3_tag(self) -> str:         # capture-name tag: T3_sweep_<level>_<tag>-<pos>
-        return self.t3_knob.lower()
+        return "".join(ch for ch in self.t3_knob.lower() if ch.isalnum())
 
     @property
     def t3_is_switch(self) -> bool:
-        return self.t3_knob in self.switches
+        return self.t3_knob in dict(self.switches)
 
     @property
     def t3_positions(self) -> tuple[str, ...]:
-        return ("off", "on") if self.t3_is_switch else ("min", "noon", "max")
+        return dict(self.switches)[self.t3_knob] if self.t3_is_switch else ("min", "noon", "max")
 
     @property
     def t3_ref(self) -> str:         # position the others are compared with
-        return "off" if self.t3_is_switch else "noon"
+        return self.t3_positions[0] if self.t3_is_switch else "noon"
+
+    @property
+    def defaults(self) -> dict:
+        return knob_dict(self.knobs, **{s: pos[0] for s, pos in self.switches})
 
     def steps(self) -> list[Step]:
         S = STIMULI
 
         def _knobs(**changes) -> dict:
-            return knob_dict(self.knobs, **{**{s: "off" for s in self.switches}, **changes})
+            return {**self.defaults, **changes}
 
         t1 = [Cap(f"T1_ramp_200_gain-{g}", S["ramp_200"], knobs=_knobs(Gain=g), question=f"{Q['Q1']} / {Q['Q2']}")
               for g in ("min", "noon", "max")]
@@ -71,11 +76,12 @@ class OverdriveModel(PedalModel):
                     for p in positions for lv in ("m50", "m30", "m10")]
 
         t3 = knob_sweeps("T3", self.t3_knob, self.t3_tag, self.t3_question, self.t3_positions)
+        others = [p for p in self.t3_positions if p != self.t3_ref]
         if self.t3_is_switch:
-            t3.append(Cap(f"T3_ramp_200_{self.t3_tag}-on", S["ramp_200"], knobs=_knobs(**{self.t3_knob: "on"}),
-                          question=f"{self.t3_question} (clipping with it on)"))
-        t3_desc = (f"small-signal (−50), quiet (−30) and loud (−10) sweep with {self.t3_knob} off/on, "
-                   f"plus a 200 Hz ramp with it on" if self.t3_is_switch else
+            t3 += [Cap(f"T3_ramp_200_{self.t3_tag}-{p}", S["ramp_200"], knobs=_knobs(**{self.t3_knob: p}),
+                       question=f"{self.t3_question} (clipping at {p})") for p in others]
+        t3_desc = (f"small-signal (−50), quiet (−30) and loud (−10) sweep at {self.t3_knob} "
+                   f"{'/'.join(self.t3_positions)}, plus a 200 Hz ramp at {'/'.join(others)}" if self.t3_is_switch else
                    f"small-signal (−50), quiet (−30) and loud (−10) sweep at {self.t3_knob} min/noon/max")
 
         return [
@@ -107,5 +113,9 @@ MODELS = {
     "boost": OverdriveModel(("Volume", "Tone", "Gain"), "Boost",
                             "Q4 What does the Boost switch do: more gain into the clipper, or more level after it?",
                             "before the clipper: earlier clipping, ramp onset moves down; after it: same "
-                            "clipping, louder output", switches=("Boost",)),
+                            "clipping, louder output", switches=(("Boost", ("off", "on")),)),
+    "lphp": OverdriveModel(("Volume", "Gain", "Tone"), "LP/HP",
+                           "Q4 What does the LP/HP switch do, and is it before the clipper?",
+                           "two filter voicings; before the clipper they change which frequencies clip first and "
+                           "how the distortion sounds, after it only the EQ", switches=(("LP/HP", ("lp", "hp")),)),
 }
