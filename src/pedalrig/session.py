@@ -23,6 +23,12 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def stimulus_file_name(stim: Stimulus) -> str:
+    """Content-addressed name in sessions/stimuli/: a changed signal gets a new file."""
+    data = np.ascontiguousarray(stim.data, dtype=np.float32)
+    return f"{stim.name}-{hashlib.sha1(data.tobytes() + str(FS).encode()).hexdigest()[:12]}.wav"
+
+
 class Session:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -55,10 +61,9 @@ class Session:
         if stim.name in self.meta["stimuli"]:
             return
         data = np.ascontiguousarray(stim.data, dtype=np.float32)
-        digest = hashlib.sha1(data.tobytes() + str(FS).encode()).hexdigest()[:12]
         store = self.path.parent / "stimuli"
         store.mkdir(exist_ok=True)
-        target = store / f"{stim.name}-{digest}.wav"
+        target = store / stimulus_file_name(stim)
         if not target.exists():
             tmp = store / f".{target.name}.tmp"
             sf.write(tmp, data, FS, subtype="FLOAT", format="WAV")

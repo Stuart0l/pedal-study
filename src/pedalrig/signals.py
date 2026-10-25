@@ -101,14 +101,37 @@ def silence(name: str, dur: float) -> Stimulus:
                     {"kind": "silence", "dur": float(dur)})
 
 
-def _pedal_stimuli() -> dict[str, Stimulus]:
-    # −50 dBFS (−35.5 dBu): small-signal response; −30 is already past the onset of a typical drive
-    out = [sync_sweep(f"sweep_m{-lv}", 20, 20000, 10, lv) for lv in (-50, -30, -20, -10)]
-    out += [ramp_sine(f"ramp_{tag}", f) for tag, f in
-            (("100", 100), ("200", 200), ("400", 400), ("1k", 1000), ("3k", 3000))]
-    out.append(bursts("bursts_200_m10", 200, -10))
-    return {s.name: s for s in out}
+def level_steps(name: str, f: float, segments: list[tuple[float, float]]) -> Stimulus:
+    """Continuous sine whose level jumps between `segments` [(level_dbfs, dur_s), ...]. Every
+    duration is a whole number of periods, so each jump lands on a zero crossing (no click) and
+    per-cycle analysis windows line up with the segment boundaries."""
+    period = FS / f
+    if period != int(period):
+        raise ValueError(f"{f} Hz has no whole-sample period at {FS} Hz")
+    lengths = [int(round(d * FS)) for _, d in segments]
+    if any(n % int(period) for n in lengths):
+        raise ValueError("every segment must last a whole number of periods")
+    env = np.concatenate([np.full(n, _amp(lv)) for (lv, _), n in zip(segments, lengths)])
+    t = np.arange(len(env)) / FS
+    x = _apply_fades(env * np.sin(2 * np.pi * f * t), 0.01, 0.01)
+    starts = np.concatenate([[0], np.cumsum(lengths)[:-1]]).tolist()
+    params = {"kind": "level_steps", "f": float(f),
+              "segments": [{"start": int(s), "n": int(n), "level_dbfs": float(lv)}
+                           for s, n, (lv, _) in zip(starts, lengths, segments)]}
+    return Stimulus(name, x.astype(np.float32), params)
 
 
-# Shared by calibration reference loopbacks (C7) and the pedal tests.
-PEDAL_STIMULI: dict[str, Stimulus] = _pedal_stimuli()
+def decay_sine(name: str, f: float, start_dbfs: float, decay_db_per_s: float, dur: float) -> Stimulus:
+    """Sine with a 2 ms attack and an exponential decay (linear in dB), like a plucked note."""
+    t = np.arange(int(round(dur * FS))) / FS
+    env = 10.0 ** ((start_dbfs - decay_db_per_s * t) / 20.0)
+    x = _apply_fades(env * np.sin(2 * np.pi * f * t), 0.002, 0.01)
+    params = {"kind": "decay_sine", "f": float(f), "start_dbfs": float(start_dbfs),
+              "decay_db_per_s": float(decay_db_per_s), "dur": float(dur)}
+    return Stimulus(name, x.astype(np.float32), params)
+
+
+# Frequency-response sweeps shared by every pedal family and by calibration (C8 repeats sweep_m20).
+# −50 dBFS (−35.5 dBu) is the small-signal level; −30 is already past the onset of a typical drive.
+SWEEPS: dict[str, Stimulus] = {f"sweep_m{-lv}": sync_sweep(f"sweep_m{-lv}", 20, 20000, 10, lv)
+                               for lv in (-50, -30, -20, -10)}

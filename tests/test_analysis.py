@@ -3,7 +3,7 @@ import pytest
 
 from pedalrig.analysis import deconvolve, frequency_response, harmonic_irs, hd_vs_freq, ir_peak
 from pedalrig.config import FS, POST_S, PRE_S
-from pedalrig.signals import PEDAL_STIMULI, sync_sweep
+from pedalrig.signals import SWEEPS, sync_sweep
 
 PRE = int(round(PRE_S * FS))
 
@@ -16,7 +16,7 @@ def _as_capture(y: np.ndarray, delay: int) -> np.ndarray:
 
 
 def test_sweep_harmonics_match_polynomial_closed_form():
-    stim = PEDAL_STIMULI["sweep_m20"]
+    stim = SWEEPS["sweep_m20"]
     p = stim.params
     x = stim.data.astype(np.float64)
     a2, a3 = 0.05, 0.02
@@ -45,7 +45,7 @@ def test_latency_gain_and_polarity(scale, polarity):
     assert pol == polarity
 
     if scale > 0:
-        long = PEDAL_STIMULI["sweep_m20"]
+        long = SWEEPS["sweep_m20"]
         xl = long.data.astype(np.float64)
         hl = deconvolve(_as_capture(scale * xl, 1234), xl, FS, 20, 20000)
         il, _ = ir_peak(hl, PRE, PRE + int(0.2 * FS))

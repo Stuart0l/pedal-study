@@ -5,16 +5,17 @@ All analysis lives in analysis.py / the notebooks.
 """
 
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 
 from .audio import capture, check_device, find_device, is_clipped, peak_dbfs
-from .config import ALL_IN, FS, IN_CH, PEDAL_MODELS, POS, PedalModel
-from .session import Session, latest_calibration
-from .signals import PEDAL_STIMULI, Stimulus, silence, sine, stepped_sine, sync_sweep
+from .config import ALL_IN, FS, IN_CH, POS
+from .models import ALL_PEDAL_STIMULI, PEDAL_MODELS
+from .plan import Cap, Step
+from .session import Session, latest_calibration, stimulus_file_name
+from .signals import SWEEPS, silence, sine, stepped_sine, sync_sweep
 
 CAL_CHECKLIST = """\
 Before calibrating (cable loopback):
@@ -38,31 +39,6 @@ Before the pedal run:
 
 ROUTING_FIX = ("check the send patch (chain A: SOURCE = USB 3/4 L, LEVEL = 0dB, OUTPUT TO = FX SND, OUT LEVEL = 0dB), "
                "GLOBAL→I/O FX SND SOURCE = Normal, GLOBAL→USB Audio FX SND SOURCE = USB OUT OFF; unit not bypassed")
-
-
-@dataclass
-class Cap:
-    name: str
-    stim: Stimulus
-    in_channels: list[int] = field(default_factory=lambda: [IN_CH])
-    knobs: dict | None = None        # full knob dict (pedal) or None (calibration)
-    question: str = ""
-    expect_clip: bool = False         # C5 top step may clip on purpose
-    expect_silence: bool = False      # C3 noise
-
-
-@dataclass
-class Step:
-    id: str
-    key: str                          # --only name
-    title: str
-    desc: str
-    why: str
-    caps: list[Cap]
-
-    @property
-    def seconds(self) -> float:
-        return sum(len(c.stim.data) / FS + 1.5 for c in self.caps)
 
 
 class Quit(Exception):
@@ -89,7 +65,7 @@ class Prompter:
 
 def calibration_steps() -> list[Step]:
     lat = sync_sweep("lat", 100, 20000, 1.0, -20)
-    sweep20 = PEDAL_STIMULI["sweep_m20"]
+    sweep20 = SWEEPS["sweep_m20"]
     return [
         Step("C2", "routing", "Routing", "1 kHz sine −20 dBFS, 2 s, record all 8 USB inputs",
              "proves USB Out 3 reaches FX SEND and the cable lands on INPUT R (USB In 8)",
@@ -109,55 +85,11 @@ def calibration_steps() -> list[Step]:
              [Cap("wide_sweep", sync_sweep("wide", 10, 23000, 10, -20))]),
         Step("C7", "refs", "Reference loopbacks", "every pedal-test signal once through the cable",
              "per-signal reference that pedal captures are divided by",
-             [Cap(f"ref_{n}", s) for n, s in PEDAL_STIMULI.items()]),
+             [Cap(f"ref_{n}", s, expect_silence=s.params["kind"] == "silence")
+              for n, s in ALL_PEDAL_STIMULI.items()]),
         Step("C8", "repeat", "Repeatability", "sweep_m20 twice more",
              "how much two identical captures differ (measurement noise floor)",
              [Cap(f"repeat_sweep_m20_{i}", sweep20) for i in (2, 3)]),
-    ]
-
-
-Q = {
-    "Q1": "Q1 Where does it clip, and how hard?",
-    "Q2": "Q2 What does Gain change?",
-    "Q3": "Q3 Is Tone before or after the clipper?",
-    "Q5": "Q5 Any dynamics (compression, sag, bias shift)?",
-    "Q6": "Q6 Clean blend?",
-    "V": "Volume check: does Volume only shift the level?",
-}
-
-
-def pedal_steps(model: PedalModel) -> list[Step]:
-    S = PEDAL_STIMULI
-
-    def _knobs(**changes) -> dict:
-        return {**{k: "noon" for k in model.knobs}, **changes}
-
-    t1 = [Cap(f"T1_ramp_200_gain-{g}", S["ramp_200"], knobs=_knobs(Gain=g), question=f"{Q['Q1']} / {Q['Q2']}")
-          for g in ("min", "noon", "max")]
-    t1 += [Cap(f"T1_ramp_{f}", S[f"ramp_{f}"], knobs=_knobs(), question=f"{Q['Q1']} (vs frequency)")
-           for f in ("100", "400", "1k", "3k")]
-
-    def knob_sweeps(test, knob, tag, q):
-        return [Cap(f"{test}_sweep_{lv}_{tag}-{p}", S[f"sweep_{lv}"], knobs=_knobs(**{knob: p}), question=q)
-                for p in ("min", "noon", "max") for lv in ("m50", "m30", "m10")]
-
-    return [
-        Step("T1", "T1", "Clip & Gain", "200 Hz ramp −60→−6 dBFS at Gain min/noon/max, "
-                                        "then 100/400/1k/3k Hz ramps at noon",
-             "static transfer curve: clipping onset, knee shape, asymmetry; what Gain moves", t1),
-        Step("T2", "T2", "Tone", "small-signal (−50), quiet (−30) and loud (−10) sweep at Tone min/noon/max",
-             "filter shapes; whether Tone changes how it distorts (pre-clip) or only re-EQs (post-clip)",
-             knob_sweeps("T2", "Tone", "tone", f"{Q['Q3']} / {Q['Q6']}")),
-        Step("T3", "T3", model.t3_knob,
-             f"small-signal (−50), quiet (−30) and loud (−10) sweep at {model.t3_knob} min/noon/max",
-             model.t3_expect, knob_sweeps("T3", model.t3_knob, model.t3_tag, model.t3_question)),
-        Step("T4", "T4", "Dynamics", "8 bursts of 200 Hz at −10 dBFS, 200 ms on / 500 ms off",
-             "compression, sag, blocking, bias shift",
-             [Cap("T4_bursts_200_m10", S["bursts_200_m10"], knobs=_knobs(), question=Q["Q5"])]),
-        Step("T5", "T5", "Volume", "quiet sweep at Volume 9:00 / noon / 3:00",
-             "confirm Volume only shifts the level, then ignore it",
-             [Cap(f"T5_sweep_m30_vol-{p}", S["sweep_m30"], knobs=_knobs(Volume=p), question=Q["V"])
-              for p in ("9", "noon", "3")]),
     ]
 
 
@@ -274,9 +206,22 @@ def _run_capture(sess: Session, dev: int, step: Step, cap: Cap, ui: Prompter, pe
 
 
 def _print_knobs(knobs: dict, prev: dict | None) -> None:
-    for k in knobs:  # panel order (pedal_steps builds every dict from model.knobs)
+    for k in knobs:  # panel order (every knob dict is built from model.knobs)
         mark = "→" if prev is None or prev[k] != knobs[k] else " "
         print(f"    {mark} {k:<7} {POS[knobs[k]]}")
+
+
+def _missing_refs(cal_ref: Path, steps: list[Step]) -> list[str]:
+    """Pedal-test signals without a matching loopback reference in the calibration session
+    (absent, or recorded with a different version of the signal)."""
+    meta = Session(cal_ref).meta
+    have = {c["name"] for c in meta["captures"]}
+    out = []
+    for stim in {c.stim.name: c.stim for s in steps for c in s.caps}.values():
+        rec = meta["stimuli"].get(stim.name)
+        if f"ref_{stim.name}" not in have or rec is None or Path(rec["file"]).name != stimulus_file_name(stim):
+            out.append(stim.name)
+    return out
 
 
 def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: str | None = None,
@@ -284,7 +229,9 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
     """`model` (a PEDAL_MODELS key) is required for kind == "pedal"."""
     ui = Prompter(yes)
     pedal = kind == "pedal"
-    steps = pedal_steps(PEDAL_MODELS[model]) if pedal else calibration_steps()
+    pm = PEDAL_MODELS[model] if pedal else None
+    steps = pm.steps() if pedal else calibration_steps()
+    last_id = steps[-1].id
     if only:
         keys = {s.key for s in steps}
         bad = [o for o in only if o not in keys]
@@ -300,6 +247,10 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
             raise SystemExit(str(e))
         if not (cal_ref / "meta.json").is_file():
             raise SystemExit(f"not a session directory: {cal_ref}")
+        missing = _missing_refs(cal_ref, steps)
+        if missing:
+            raise SystemExit(f"calibration {cal_ref.name} has no loopback reference for {missing}: "
+                             "run uv run pedalrig calibrate (cable loopback) first")
 
     print(f"\n[{'P0' if pedal else 'C0'}] Checklist\n{PEDAL_CHECKLIST if pedal else CAL_CHECKLIST}")
     if not yes:
@@ -317,7 +268,6 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
 
     complete = only is None
     prev_knobs = None
-    last_id = "T5" if pedal else "C8"
     try:
         for step in steps:
             print(f"\n[{step.id}/{last_id}] {step.title} — {step.desc} (≈{step.seconds:.0f} s)")
@@ -352,7 +302,7 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
 
     sess.meta["complete"] = complete
     sess.save_meta()
-    nb = "notebooks/02_pedal.ipynb" if pedal else "notebooks/01_calibration.ipynb"
+    nb = pm.notebook if pedal else "notebooks/01_calibration.ipynb"
     print(f"\nsaved {len(sess.meta['captures'])} captures to {sess.path} (complete={complete})")
     print(f"analyze in {nb}")
     return sess.path
