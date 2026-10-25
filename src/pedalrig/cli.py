@@ -2,6 +2,8 @@
 
 import argparse
 
+from .config import PEDAL_MODELS
+
 CAL_KEYS = ["routing", "noise", "latency", "levels", "wideband", "refs", "repeat"]
 PEDAL_KEYS = ["T1", "T2", "T3", "T4", "T5"]
 
@@ -35,7 +37,9 @@ def main() -> None:
     c.add_argument("--yes", action="store_true", help="no prompts; keep captures with warnings")
 
     q = sub.add_parser("pedal", help="pedal tests T1-T5: FX SEND -> pedal -> INPUT R")
-    q.add_argument("--label", default="pedal")
+    q.add_argument("--model", required=True, choices=sorted(PEDAL_MODELS),
+                   help="knob set: " + "; ".join(f"{k} = {', '.join(m.knobs)}" for k, m in PEDAL_MODELS.items()))
+    q.add_argument("--label", help="session label (default: the model name)")
     q.add_argument("--calibration", help="calibration session dir (default: newest complete)")
     q.add_argument("--only", nargs="+", choices=PEDAL_KEYS)
     q.add_argument("--list", action="store_true")
@@ -50,9 +54,12 @@ def main() -> None:
 
     kind = "calibration" if a.cmd == "calibrate" else "pedal"
     if a.list:
-        print_list(calibration_steps() if kind == "calibration" else pedal_steps(), kind)
+        print_list(calibration_steps() if kind == "calibration" else pedal_steps(PEDAL_MODELS[a.model]), kind)
         return
-    run(kind, a.label, a.only, a.yes, getattr(a, "calibration", None))
+    if kind == "calibration":
+        run(kind, a.label, a.only, a.yes)
+    else:
+        run(kind, a.label or a.model, a.only, a.yes, a.calibration, a.model)
 
 
 if __name__ == "__main__":

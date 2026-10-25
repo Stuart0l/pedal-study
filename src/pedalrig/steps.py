@@ -12,7 +12,7 @@ import numpy as np
 import sounddevice as sd
 
 from .audio import capture, check_device, find_device, is_clipped, peak_dbfs
-from .config import ALL_IN, FS, IN_CH, KNOBS, POS
+from .config import ALL_IN, FS, IN_CH, PEDAL_MODELS, POS, PedalModel
 from .session import Session, latest_calibration
 from .signals import PEDAL_STIMULI, Stimulus, silence, sine, stepped_sine, sync_sweep
 
@@ -116,25 +116,22 @@ def calibration_steps() -> list[Step]:
     ]
 
 
-DEFAULT_KNOBS = {k: "noon" for k in KNOBS}
-
 Q = {
     "Q1": "Q1 Where does it clip, and how hard?",
     "Q2": "Q2 What does Gain change?",
     "Q3": "Q3 Is Tone before or after the clipper?",
-    "Q4": "Q4 What is Saturation-Cut?",
     "Q5": "Q5 Any dynamics (compression, sag, bias shift)?",
     "Q6": "Q6 Clean blend?",
     "V": "Volume check: does Volume only shift the level?",
 }
 
 
-def _knobs(**changes) -> dict:
-    return {**DEFAULT_KNOBS, **changes}
-
-
-def pedal_steps() -> list[Step]:
+def pedal_steps(model: PedalModel) -> list[Step]:
     S = PEDAL_STIMULI
+
+    def _knobs(**changes) -> dict:
+        return {**{k: "noon" for k in model.knobs}, **changes}
+
     t1 = [Cap(f"T1_ramp_200_gain-{g}", S["ramp_200"], knobs=_knobs(Gain=g), question=f"{Q['Q1']} / {Q['Q2']}")
           for g in ("min", "noon", "max")]
     t1 += [Cap(f"T1_ramp_{f}", S[f"ramp_{f}"], knobs=_knobs(), question=f"{Q['Q1']} (vs frequency)")
@@ -151,8 +148,9 @@ def pedal_steps() -> list[Step]:
         Step("T2", "T2", "Tone", "small-signal (−50), quiet (−30) and loud (−10) sweep at Tone min/noon/max",
              "filter shapes; whether Tone changes how it distorts (pre-clip) or only re-EQs (post-clip)",
              knob_sweeps("T2", "Tone", "tone", f"{Q['Q3']} / {Q['Q6']}")),
-        Step("T3", "T3", "Saturation-Cut", "small-signal (−50), quiet (−30) and loud (−10) sweep at Cut min/noon/max",
-             "expected: post-clip low-pass whose corner moves", knob_sweeps("T3", "Cut", "cut", Q["Q4"])),
+        Step("T3", "T3", model.t3_knob,
+             f"small-signal (−50), quiet (−30) and loud (−10) sweep at {model.t3_knob} min/noon/max",
+             model.t3_expect, knob_sweeps("T3", model.t3_knob, model.t3_tag, model.t3_question)),
         Step("T4", "T4", "Dynamics", "8 bursts of 200 Hz at −10 dBFS, 200 ms on / 500 ms off",
              "compression, sag, blocking, bias shift",
              [Cap("T4_bursts_200_m10", S["bursts_200_m10"], knobs=_knobs(), question=Q["Q5"])]),
@@ -276,15 +274,17 @@ def _run_capture(sess: Session, dev: int, step: Step, cap: Cap, ui: Prompter, pe
 
 
 def _print_knobs(knobs: dict, prev: dict | None) -> None:
-    for k in KNOBS:
+    for k in knobs:  # panel order (pedal_steps builds every dict from model.knobs)
         mark = "→" if prev is None or prev[k] != knobs[k] else " "
         print(f"    {mark} {k:<7} {POS[knobs[k]]}")
 
 
-def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: str | None = None) -> Path:
+def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: str | None = None,
+        model: str | None = None) -> Path:
+    """`model` (a PEDAL_MODELS key) is required for kind == "pedal"."""
     ui = Prompter(yes)
     pedal = kind == "pedal"
-    steps = pedal_steps() if pedal else calibration_steps()
+    steps = pedal_steps(PEDAL_MODELS[model]) if pedal else calibration_steps()
     if only:
         keys = {s.key for s in steps}
         bad = [o for o in only if o not in keys]
@@ -308,6 +308,8 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
     sess = Session.create(kind, label, device)
     sess.meta["checklist_confirmed"] = True
     sess.meta["calibration_ref"] = str(cal_ref) if cal_ref else None
+    if pedal:
+        sess.meta["pedal_model"] = model
     sess.save_meta()
     print(f"  session: {sess.path}")
     if cal_ref:
