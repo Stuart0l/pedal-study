@@ -5,6 +5,10 @@ from scipy.fft import irfft, rfft, rfftfreq
 
 from ..analysis import PedalAnalysis, band_mean, db, dbu, harmonics, next_pow2, per_cycle
 
+# parallel clean path (Q7): past the knee the output grows again at >= 0.5 dB/dB and THD falls >= 3 dB
+BLEND_TOP_SLOPE = 0.5
+BLEND_THD_DROP_DB = 3.0
+
 
 class OverdriveAnalysis(PedalAnalysis):
     # ---- ramps (T1)
@@ -77,6 +81,8 @@ class OverdriveAnalysis(PedalAnalysis):
                 "ref": self._bursts(self.cs, self._ref(name))}
 
     def blend_metric(self, m30_name: str, m10_name: str) -> dict:
+        """Clean bass blend (Q6): responses normalized at 1 kHz and loud-level THD in the bass vs
+        the mids. Designs that keep the low end out of the clipper show much lower bass THD."""
         q, l = self.sweep_response(m30_name), self.sweep_response(m10_name)
         f = q["f"]
         norm = lambda r: r["mag_db"] - np.interp(1000, f, r["mag_db"])  # noqa: E731
@@ -84,3 +90,30 @@ class OverdriveAnalysis(PedalAnalysis):
         return {"f": f, "quiet_db": norm(q), "loud_db": norm(l),
                 "thd_low_40_150_db": band_mean(f, thd, 40, 150),
                 "thd_mid_400_2k_db": band_mean(f, thd, 400, 2000)}
+
+    @staticmethod
+    def clean_blend(r: dict) -> dict | None:
+        """Signs of an unclipped path mixed with the clipped one, from a ramp_transfer result
+        (None if the ramp never reached its 1 dB onset).
+
+        A plain clipper stays at its ceiling past the knee: output slope ~0, THD stays high. With
+        a clean path summed in, the clipped part saturates while the clean part keeps growing, so
+        the slope recovers toward 1 and THD falls again at high input. Slopes are over 3 dB of
+        input, THD is the median over 1 dB. `clean_gain_max_db` = output − input at the top: an
+        upper bound for the clean path's gain (the clipped part still adds to the output)."""
+        onset = r["onset_1db_dbu"]
+        if onset is None:
+            return None
+        i, o, thd = r["in_dbu"], r["out_dbu"], r["thd_db"]
+        top = float(i[-1])
+        xs = np.arange(onset, top - 3.0 + 1e-9, 0.5)
+        if len(xs) < 2:
+            return None
+        slope = np.array([(np.interp(x + 3, i, o) - np.interp(x, i, o)) / 3 for x in xs])
+        thd_med = np.array([np.median(thd[(i >= x) & (i < x + 1)]) for x in np.arange(onset, top - 1 + 1e-9, 0.5)])
+        top_slope = float(slope[-1])
+        thd_peak, thd_top = float(thd_med.max()), float(thd_med[-1])
+        return {"name": r["name"], "min_slope": float(slope.min()), "top_slope": top_slope,
+                "thd_peak_db": thd_peak, "thd_top_db": thd_top, "thd_drop_db": thd_peak - thd_top,
+                "clean_gain_max_db": float(o[-1] - i[-1]),
+                "clean_path": bool(top_slope >= BLEND_TOP_SLOPE and thd_peak - thd_top >= BLEND_THD_DROP_DB)}
