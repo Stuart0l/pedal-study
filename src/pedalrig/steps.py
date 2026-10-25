@@ -22,10 +22,11 @@ Before calibrating (cable loopback):
  2. GLOBAL -> USB Audio: FX SND SOURCE = USB OUT OFF, OUTPUT SOURCE = USB OUT 1/2,
     REC LEVEL(7/8) = 0dB (leave it there for good), MONITOR LEVEL = 0dB.
  3. GLOBAL -> I/O: FX SND SOURCE = Normal, OUTPUT SOURCE = USB Only, INPUT MODE(R) = E.GT.
- 4. Saved send patch, all slots empty: chain A input SOURCE = USB 3/4, INPUT CH = L, LEVEL = +11dB;
-    chain A output OUTPUT TO = FX SND, OUT LEVEL = +11dB (USB playback is ~22 dB down digitally;
-    +22 dB total makes the send equal the stimulus level, loop gain 0 dB). Unit NOT bypassed.
- 5. macOS: Audio MIDI Setup -> Ampero II Stomp Audio = 48,000 Hz (USB In 5-8 are silent at 96 kHz).
+ 4. Saved send patch, all slots empty: chain A input SOURCE = USB 3/4, INPUT CH = L, LEVEL = 0dB;
+    chain A output OUTPUT TO = FX SND, OUT LEVEL = 0dB (the direct USB OUT 3/4 -> FX SND route
+    loses 6 dB; this patch gives a 0 dB loop). Unit NOT bypassed.
+ 5. macOS: Audio MIDI Setup -> Ampero II Stomp Audio = 48,000 Hz (USB In 5-8 are silent at 96 kHz),
+    and the Ampero's main volume at maximum (0 dB; a lower slider scales every stimulus).
     Allow the terminal app microphone access if macOS prompts."""
 
 PEDAL_CHECKLIST = """\
@@ -35,7 +36,7 @@ Before the pedal run:
  3. Ampero settings unchanged since calibration (REC LEVEL(7/8) still 0dB).
  4. Knob positions marked (tape/photo) so every setting is repeatable."""
 
-ROUTING_FIX = ("check the send patch (chain A: SOURCE = USB 3/4 L, LEVEL = +11dB, OUTPUT TO = FX SND, OUT LEVEL = +11dB), "
+ROUTING_FIX = ("check the send patch (chain A: SOURCE = USB 3/4 L, LEVEL = 0dB, OUTPUT TO = FX SND, OUT LEVEL = 0dB), "
                "GLOBAL→I/O FX SND SOURCE = Normal, GLOBAL→USB Audio FX SND SOURCE = USB OUT OFF; unit not bypassed")
 
 
@@ -141,15 +142,16 @@ def pedal_steps() -> list[Step]:
 
     def knob_sweeps(test, knob, tag, q):
         return [Cap(f"{test}_sweep_{lv}_{tag}-{p}", S[f"sweep_{lv}"], knobs=_knobs(**{knob: p}), question=q)
-                for p in ("min", "noon", "max") for lv in ("m30", "m10")]
+                for p in ("min", "noon", "max") for lv in ("m50", "m30", "m10")]
 
     return [
-        Step("T1", "T1", "Clip & Gain", "200 Hz ramp −40→−6 dBFS at Gain min/noon/max, then 100/400/1k/3k Hz at noon",
+        Step("T1", "T1", "Clip & Gain", "200 Hz ramp −60→−6 dBFS at Gain min/noon/max, "
+                                        "then 100/400/1k/3k Hz ramps at noon",
              "static transfer curve: clipping onset, knee shape, asymmetry; what Gain moves", t1),
-        Step("T2", "T2", "Tone", "quiet (−30) and loud (−10) sweep at Tone min/noon/max",
+        Step("T2", "T2", "Tone", "small-signal (−50), quiet (−30) and loud (−10) sweep at Tone min/noon/max",
              "filter shapes; whether Tone changes how it distorts (pre-clip) or only re-EQs (post-clip)",
              knob_sweeps("T2", "Tone", "tone", f"{Q['Q3']} / {Q['Q6']}")),
-        Step("T3", "T3", "Saturation-Cut", "quiet (−30) and loud (−10) sweep at Cut min/noon/max",
+        Step("T3", "T3", "Saturation-Cut", "small-signal (−50), quiet (−30) and loud (−10) sweep at Cut min/noon/max",
              "expected: post-clip low-pass whose corner moves", knob_sweeps("T3", "Cut", "cut", Q["Q4"])),
         Step("T4", "T4", "Dynamics", "8 bursts of 200 Hz at −10 dBFS, 200 ms on / 500 ms off",
              "compression, sag, blocking, bias shift",
@@ -328,15 +330,19 @@ def run(kind: str, label: str, only: list[str] | None, yes: bool, calibration: s
             for i, cap in enumerate(step.caps, 1):
                 if pedal:
                     print(f"\n  ({i}/{len(step.caps)}) {cap.name}   {cap.question}")
-                    print("    knobs (→ = turn now):")
-                    _print_knobs(cap.knobs, prev_knobs)
-                    ans = ui.choose("Enter = run, s = skip, q = quit:", "sq", "r")
-                    if ans == "q":
-                        raise Quit
-                    if ans == "s":
-                        complete = False
-                        continue
-                    prev_knobs = cap.knobs
+                    if cap.knobs == prev_knobs:
+                        # nothing to turn: capture straight away (Ctrl-C still stops the run)
+                        print("    knobs unchanged, capturing")
+                    else:
+                        print("    knobs (→ = turn now):")
+                        _print_knobs(cap.knobs, prev_knobs)
+                        ans = ui.choose("Enter = run, s = skip, q = quit:", "sq", "r")
+                        if ans == "q":
+                            raise Quit
+                        if ans == "s":
+                            complete = False
+                            continue
+                        prev_knobs = cap.knobs
                 _run_capture(sess, device["index"], step, cap, ui, pedal)
     except (Quit, KeyboardInterrupt):
         print("\n  stopped; captured data so far is saved.")

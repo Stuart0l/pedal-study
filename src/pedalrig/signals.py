@@ -69,7 +69,7 @@ def stepped_sine(name: str, f: float, levels_dbfs: list[float], step_s: float = 
     return Stimulus(name, x.astype(np.float32), params)
 
 
-def ramp_sine(name: str, f: float, dur: float = 10.0, start_dbfs: float = -40.0,
+def ramp_sine(name: str, f: float, dur: float = 10.0, start_dbfs: float = -60.0,
               end_dbfs: float = -6.0) -> Stimulus:
     n = int(round(dur * FS))
     t = np.arange(n) / FS
@@ -102,7 +102,8 @@ def silence(name: str, dur: float) -> Stimulus:
 
 
 def _pedal_stimuli() -> dict[str, Stimulus]:
-    out = [sync_sweep(f"sweep_m{-lv}", 20, 20000, 10, lv) for lv in (-30, -20, -10)]
+    # −50 dBFS (−35.5 dBu): small-signal response; −30 is already past the onset of a typical drive
+    out = [sync_sweep(f"sweep_m{-lv}", 20, 20000, 10, lv) for lv in (-50, -30, -20, -10)]
     out += [ramp_sine(f"ramp_{tag}", f) for tag, f in
             (("100", 100), ("200", 200), ("400", 400), ("1k", 1000), ("3k", 3000))]
     out.append(bursts("bursts_200_m10", 200, -10))

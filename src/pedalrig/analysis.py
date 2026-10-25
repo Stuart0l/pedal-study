@@ -11,7 +11,7 @@ import numpy as np
 from scipy import signal
 from scipy.fft import irfft, rfft, rfftfreq
 
-from .config import CLIP, IN_CH, SEND_DBU_AT_0DBFS
+from .config import CLIP, IN_CH, INPUT_SIDE_GAIN_DB, SEND_DBU_AT_0DBFS
 
 # ---------------------------------------------------------------- primitives
 
@@ -302,6 +302,8 @@ def calibration_summary(sess) -> dict:
         mid = [r for r in rows if -40 <= r["in_dbfs"] <= -6]
         out["G_db"] = float(np.median([r["gain_db"] for r in mid]))
         out["G_lin"] = float(10 ** (out["G_db"] / 20))
+        for r in rows:  # level actually present at the send jack (G lies on the send side)
+            r["in_dbu"] = r["in_dbfs"] + out["G_db"] - INPUT_SIDE_GAIN_DB + SEND_DBU_AT_0DBFS
         clean = [r["in_dbfs"] for r in rows if not r["clipped"] and r["thdn_db"] < -60]
         out["max_clean_dbfs"] = max(clean) if clean else None
         r20 = next(r for r in rows if r["in_dbfs"] == -20)
@@ -357,8 +359,12 @@ def calibration_summary(sess) -> dict:
 
 
 class PedalAnalysis:
-    """Pedal captures referenced to the calibration loopback: x polarity / G_lin, divided by the
-    same-stimulus reference where a transfer function is computed."""
+    """Pedal captures referenced to the calibration loopback.
+
+    The loop gain G splits into a send side (before the pedal) and an input side (after it):
+    G = g_send * g_in, with g_in = INPUT_SIDE_GAIN_DB (measured 0 dB). Captures are divided by
+    g_in (true pedal output); the stimulus is multiplied by g_send (true pedal input). Transfer
+    functions divide by the same-stimulus loopback reference, where the split cancels."""
 
     def __init__(self, pedal_sess, cal_summary: dict, cal_sess):
         self.ps, self.cal, self.cs = pedal_sess, cal_summary, cal_sess
@@ -368,10 +374,17 @@ class PedalAnalysis:
             if k not in cal_summary:
                 raise ValueError(f"calibration summary lacks '{k}': run uv run pedalrig calibrate")
         need = sorted({c["stimulus"] for c in pedal_sess.meta["captures"]})
+        cal_stims = {cal_sess.capture_info(n)["stimulus"] for n in cal_sess.capture_names()}
         missing = [f"ref_{s}" for s in need if f"ref_{s}" not in cal_sess.capture_names()]
-        if missing:
-            raise ValueError(f"missing loopback refs {missing}: run uv run pedalrig calibrate")
-        self.scale = cal_summary["polarity"] / cal_summary["G_lin"]
+        # stimulus files are named by content hash: a changed signal definition means a stale reference
+        stale = [f"ref_{s}" for s in need if f"ref_{s}" in cal_sess.capture_names() and s in cal_stims
+                 and cal_sess.stim_params(s)["file"] != pedal_sess.stim_params(s)["file"]]
+        if missing or stale:
+            raise ValueError(f"missing loopback refs {missing}, refs for a different signal {stale}: "
+                             "run uv run pedalrig calibrate")
+        self.g_in = 10 ** (INPUT_SIDE_GAIN_DB / 20)
+        self.g_send = cal_summary["G_lin"] / self.g_in
+        self.scale = cal_summary["polarity"] / self.g_in
         self.latency_stable = cal_summary.get("latency_stable")
         self.f_valid_hi = min(20000.0, cal_summary.get("bw_hi_3db") or 20000.0)
 
@@ -414,7 +427,7 @@ class PedalAnalysis:
         info = self.ps.capture_info(name)
         p = self.ps.stim_params(info["stimulus"])
         f = p["f"]
-        x = self.ps.load_stimulus(info["stimulus"])
+        x = self.ps.load_stimulus(info["stimulus"]) * self.g_send  # what the pedal actually received
         yr = self._y(self.ps, name)
         lat = self._latency(yr, x)
         y = segment(yr, lat, self.ps.meta["pre_s"], fs, len(x))
@@ -423,8 +436,13 @@ class PedalAnalysis:
         # drop windows overlapping the 10 ms fades (by time: at 3 kHz that is ~30 windows)
         keep = (px["t"] > 0.015) & (px["t"] < len(x) / fs - 0.015)
         in_db, out_db = db(px["A"][keep, 0]), db(py["A"][keep, 0])
-        n20 = max(3, int(0.2 * len(in_db)))
-        g = float(np.median(out_db[:n20] - in_db[:n20]))
+        # Clean (linear) gain from the ramp's own quiet start: its first 5 dB (from -45.5 dBu). The
+        # slope of output vs input dB there verifies it is linear (1.0); below 0.95 the pedal is
+        # already compressing at the start, so the clean gain is a lower bound and the onset an
+        # upper bound (measured: 3 kHz at Gain noon has slope 0.80 and -31 dB THD at -45 dBu).
+        start = in_db <= in_db[0] + 5.0
+        g = float(np.median(out_db[start] - in_db[start]))
+        start_slope = float(np.polyfit(in_db[start], out_db[start], 1)[0])
         short = (in_db + g) - out_db
         onset = None
         for i in range(len(short) - 5):
@@ -451,7 +469,7 @@ class PedalAnalysis:
 
         return {"name": name, "knobs": self.knobs(name), "f": f,
                 "in_dbu": dbu(in_db), "out_dbu": dbu(out_db), "linear_gain_db": g,
-                "onset_1db_dbu": onset,
+                "onset_1db_dbu": onset, "start_slope": start_slope, "start_linear": start_slope >= 0.95,
                 "hd2_db": db(rel[:, 0]) if rel.shape[1] >= 1 else None,
                 "hd3_db": db(rel[:, 1]) if rel.shape[1] >= 2 else None, "thd_db": thd,
                 "asym_db": db(py["peak_pos"][keep]) - db(py["peak_neg"][keep]),
