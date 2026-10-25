@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+
+# measured data, generated reports, report tooling, manual
+sessions/
+reports/
+scripts/
+*.pdf
